@@ -1,0 +1,6 @@
+{
+  "name": "IceStream - Real-Time Lakehouse Observability Specification",
+  "description": "Production-style architecture specification, directory structure, communication patterns, and development roadmap for IceStream.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

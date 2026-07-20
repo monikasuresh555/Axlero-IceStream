@@ -1,0 +1,37 @@
+/*@import "tailwindcss";*/
+
+/* React Flow custom visual styling */
+.react-flow__node {
+  border-radius: 12px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
+
+.react-flow__handle {
+  width: 8px !important;
+  height: 8px !important;
+  background-color: rgb(34, 211, 238) !important;
+  border: 2px solid rgb(15, 23, 42) !important;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2.5px !important;
+}
+
+/* Custom scrollbar for slate panel designs */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
