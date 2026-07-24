@@ -1,38 +1,34 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import ReactFlow, { 
-  Node, 
-  Edge, 
-  Position, 
-  Background, 
-  Controls,
-  MarkerType
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import ReactFlow, {
+  Node,
+  Edge,
+  Background
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { 
-  ResponsiveContainer, 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip 
-} from 'recharts';
-import { 
-  Activity, 
-  AlertTriangle, 
-  ShieldCheck, 
-  Play, 
-  Square, 
-  Zap, 
-  Server, 
-  Database, 
-  Layers, 
-  ExternalLink,
-  Info,
-  CheckCircle2,
-  ListFilter
-} from 'lucide-react';
 
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip
+} from 'recharts';
+
+import {
+  Activity,
+  AlertTriangle,
+  ShieldCheck,
+  Play,
+  Square,
+  Zap,
+  Server,
+  Database,
+  Layers,
+  Info,
+  CheckCircle2
+} from 'lucide-react';
 // Interfaces mapping backend models
 interface Incident {
   id: string;

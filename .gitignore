@@ -9,3 +9,32 @@ coverage/
 # Python
 __pycache__/
 *.py[cod]
+# Java
+target/
+*.class
+
+# Maven
+.mvn/
+*.jar
+
+# Node
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# Build errors
+*_build_error.txt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
