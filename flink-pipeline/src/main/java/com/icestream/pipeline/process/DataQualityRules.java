@@ -11,13 +11,12 @@ public class DataQualityRules {
         return transaction.getTaxAmount() == null;
     }
 
-    public static boolean hasNegativeAmount(Transaction transaction) {
-        return transaction.getAmount() != null
-                && transaction.getAmount() < 0;
+    public static boolean hasNegativePrice(Transaction transaction) {
+        return transaction.getPrice() < 0;
     }
 
     public static boolean isValid(Transaction transaction) {
         return !hasNullTax(transaction)
-                && !hasNegativeAmount(transaction);
+                && !hasNegativePrice(transaction);
     }
 }

@@ -4,54 +4,76 @@ import java.io.Serializable;
 
 public class Transaction implements Serializable {
 
-    private String orderId;
-    private String customerId;
-    private Double amount;
+    private String transactionId;
+    private String userId;
+    private String productId;
+    private int quantity;
+    private double price;
     private Double taxAmount;
     private String paymentMethod;
-    private Long timestamp;
+    private String eventTimestamp;
 
     public Transaction() {
     }
 
     public Transaction(
-            String orderId,
-            String customerId,
-            Double amount,
+            String transactionId,
+            String userId,
+            String productId,
+            int quantity,
+            double price,
             Double taxAmount,
             String paymentMethod,
-            Long timestamp) {
+            String eventTimestamp) {
 
-        this.orderId = orderId;
-        this.customerId = customerId;
-        this.amount = amount;
+        this.transactionId = transactionId;
+        this.userId = userId;
+        this.productId = productId;
+        this.quantity = quantity;
+        this.price = price;
         this.taxAmount = taxAmount;
         this.paymentMethod = paymentMethod;
-        this.timestamp = timestamp;
+        this.eventTimestamp = eventTimestamp;
     }
 
-    public String getOrderId() {
-        return orderId;
+    public String getTransactionId() {
+        return transactionId;
     }
 
-    public void setOrderId(String orderId) {
-        this.orderId = orderId;
+    public void setTransactionId(String transactionId) {
+        this.transactionId = transactionId;
     }
 
-    public String getCustomerId() {
-        return customerId;
+    public String getUserId() {
+        return userId;
     }
 
-    public void setCustomerId(String customerId) {
-        this.customerId = customerId;
+    public void setUserId(String userId) {
+        this.userId = userId;
     }
 
-    public Double getAmount() {
-        return amount;
+    public String getProductId() {
+        return productId;
     }
 
-    public void setAmount(Double amount) {
-        this.amount = amount;
+    public void setProductId(String productId) {
+        this.productId = productId;
+    }
+
+    public int getQuantity() {
+        return quantity;
+    }
+
+    public void setQuantity(int quantity) {
+        this.quantity = quantity;
+    }
+
+    public double getPrice() {
+        return price;
+    }
+
+    public void setPrice(double price) {
+        this.price = price;
     }
 
     public Double getTaxAmount() {
@@ -70,23 +92,25 @@ public class Transaction implements Serializable {
         this.paymentMethod = paymentMethod;
     }
 
-    public Long getTimestamp() {
-        return timestamp;
+    public String getEventTimestamp() {
+        return eventTimestamp;
     }
 
-    public void setTimestamp(Long timestamp) {
-        this.timestamp = timestamp;
+    public void setEventTimestamp(String eventTimestamp) {
+        this.eventTimestamp = eventTimestamp;
     }
 
     @Override
     public String toString() {
         return "Transaction{" +
-                "orderId='" + orderId + '\'' +
-                ", customerId='" + customerId + '\'' +
-                ", amount=" + amount +
+                "transactionId='" + transactionId + '\'' +
+                ", userId='" + userId + '\'' +
+                ", productId='" + productId + '\'' +
+                ", quantity=" + quantity +
+                ", price=" + price +
                 ", taxAmount=" + taxAmount +
                 ", paymentMethod='" + paymentMethod + '\'' +
-                ", timestamp=" + timestamp +
+                ", eventTimestamp='" + eventTimestamp + '\'' +
                 '}';
     }
 }
