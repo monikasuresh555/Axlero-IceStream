@@ -42,9 +42,12 @@ services:
       - "8081:8081"
     command: jobmanager
     environment:
-      - |
-        FLINK_PROPERTIES=
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: checkout_events
+      FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
+    depends_on:
+      - kafka
     networks:
       - icestream-network
 
@@ -53,19 +56,21 @@ services:
       context: ./flink-pipeline
       dockerfile: Dockerfile
     container_name: icestream-flink-taskmanager
+    command: taskmanager
     depends_on:
       - flink-jobmanager
-    command: taskmanager
+      - kafka
     environment:
-      - |
-        FLINK_PROPERTIES=
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: checkout_events
+      FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
     networks:
       - icestream-network
 
   # ==========================================
-  # LAKEHOUSE STORAGE (MINIO FOR ICEBERG)
+  # LAKEHOUSE STORAGE (MINIO)
   # ==========================================
   minio:
     image: minio/minio:latest
@@ -81,25 +86,25 @@ services:
       - icestream-network
 
   # ==========================================
-  # PYTHON TELEMETRY GENERATOR
+  # PYTHON DATA GENERATOR
   # ==========================================
   data-generator:
     build:
       context: ./generator
       dockerfile: Dockerfile
     container_name: icestream-generator
+    depends_on:
+      - kafka
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: checkout_events
       SEND_INTERVAL_SEC: 1.0
       ANOMALY_RATE: 0.05
-    depends_on:
-      - kafka
     networks:
       - icestream-network
 
   # ==========================================
-  # GREAT EXPECTATIONS VALIDATOR
+  # OBSERVABILITY VALIDATOR
   # ==========================================
   observability-validator:
     build:
@@ -114,7 +119,7 @@ services:
       - icestream-network
 
   # ==========================================
-  # EXPRESS BACKEND GATEWAY
+  # EXPRESS BACKEND
   # ==========================================
   express-gateway:
     build:
@@ -123,18 +128,18 @@ services:
     container_name: icestream-backend
     ports:
       - "3001:3001"
+    depends_on:
+      - kafka
     volumes:
       - shared-data:/tmp
     environment:
       PORT: 3001
       VALIDATION_REPORT_PATH: /tmp/validation_report.json
-    depends_on:
-      - kafka
     networks:
       - icestream-network
 
   # ==========================================
-  # VITE REACT DASHBOARD
+  # REACT FRONTEND
   # ==========================================
   frontend-dashboard:
     build:
