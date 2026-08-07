@@ -109,6 +109,68 @@ app.get('/api/incidents', (_req: Request, res: Response) => {
   res.json(incidentHistory);
 });
 
+// ==========================================
+// DASHBOARD API ENDPOINTS
+// ==========================================
+
+// Dashboard Status
+app.get('/api/status', (_req: Request, res: Response) => {
+  res.json({
+    status: isPipelineRunning ? "RUNNING" : "PAUSED",
+    pipeline_health: isAnomalyActive ? "DEGRADED" : "HEALTHY",
+    circuit_breaker: isAnomalyActive ? "OPEN" : "CLOSED",
+    flink_job: "RUNNING",
+    kafka: "CONNECTED",
+    iceberg: "CONNECTED",
+    minio: "CONNECTED",
+    websocket_clients: wss.clients.size
+  });
+});
+
+// Metrics
+app.get('/api/metrics', (_req: Request, res: Response) => {
+
+  const throughput = 1200 + Math.floor(Math.random() * 100);
+  const errorRate = isAnomalyActive
+    ? 3 + Math.random()
+    : +(0.2 + Math.random() * 0.5).toFixed(2);
+
+  res.json({
+    throughput_events_per_sec: throughput,
+    processed_total: Math.floor(Date.now() / 1000),
+    error_rate: errorRate,
+    dlq_count: isAnomalyActive ? 38 : 12,
+    checkpoint: 1408,
+    checkpoint_duration_ms: 320,
+    kafka_consumer_lag: Math.floor(Math.random() * 30),
+    latency_ms: 15 + Math.floor(Math.random() * 5)
+  });
+});
+
+// Iceberg Snapshots
+app.get('/api/iceberg/snapshots', (_req: Request, res: Response) => {
+
+  res.json([
+    {
+      snapshot_id: "snap-984120481204",
+      current: true,
+      operation: "append",
+      records_added: 45000,
+      total_records: 142580,
+      committed_at: new Date().toISOString()
+    },
+    {
+      snapshot_id: "snap-984110392100",
+      current: false,
+      operation: "append",
+      records_added: 32000,
+      total_records: 97580,
+      committed_at: new Date(Date.now() - 3600000).toISOString()
+    }
+  ]);
+
+});
+
 app.post('/api/trigger-anomaly', (_req: Request, res: Response) => {
   isAnomalyActive = !isAnomalyActive;
 

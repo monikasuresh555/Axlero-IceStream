@@ -1,0 +1,11 @@
+{
+  "throughput": 0,
+  "processedTotal": 0,
+  "errorRate": 0,
+  "dlqCount": 0,
+  "latency": 0,
+  "checkpointId": 0,
+  "kafkaLag": 0,
+  "circuitBreaker": "CLOSED",
+  "lastUpdated": ""
+}
