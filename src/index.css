@@ -1,1 +1,192 @@
-@import "tailwindcss";
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #e2e8f0;
+  background: #020617;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100%;
+  width: 100%;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(34, 211, 238, 0.10), transparent 28%),
+    radial-gradient(circle at 90% 5%, rgba(139, 92, 246, 0.10), transparent 30%),
+    #020617;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #020617;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.45);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.7);
+}
+
+/* Dashboard cards */
+.bg-slate-900\/60,
+.bg-slate-900\/40,
+.bg-slate-900\/30,
+.bg-slate-900 {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* KPI cards */
+.lg\:col-span-8 > .grid > div {
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.lg\:col-span-8 > .grid > div::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #22d3ee, #8b5cf6);
+  opacity: 0.8;
+}
+
+.lg\:col-span-8 > .grid > div:hover {
+  transform: translateY(-3px);
+  border-color: rgba(34, 211, 238, 0.35);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+/* Buttons */
+button {
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+button:active {
+  transform: scale(0.97);
+}
+
+/* React Flow */
+.react-flow {
+  background:
+    radial-gradient(circle at center, rgba(34, 211, 238, 0.06), transparent 55%),
+    #020617 !important;
+}
+
+.react-flow__node {
+  border-radius: 14px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+}
+
+.react-flow__handle {
+  width: 9px !important;
+  height: 9px !important;
+  background: #22d3ee !important;
+  border: 2px solid #020617 !important;
+}
+
+.react-flow__edge-path {
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 4px rgba(34, 211, 238, 0.35));
+}
+
+.react-flow__background pattern circle {
+  fill: rgba(148, 163, 184, 0.12);
+}
+
+/* Chart */
+.recharts-wrapper {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.recharts-tooltip-wrapper {
+  outline: none;
+}
+
+/* Section panels */
+.lg\:col-span-8 > div,
+.lg\:col-span-4 > div {
+  box-shadow:
+    0 10px 35px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+/* Header glow */
+header {
+  box-shadow:
+    0 1px 0 rgba(34, 211, 238, 0.08),
+    0 8px 30px rgba(0, 0, 0, 0.25);
+}
+
+/* Live indicators */
+.animate-pulse {
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+/* Critical alert */
+.bg-rose-950\/80 {
+  box-shadow:
+    inset 0 -1px 0 rgba(244, 63, 94, 0.25),
+    0 8px 30px rgba(244, 63, 94, 0.08);
+}
+
+/* Smooth page appearance */
+main {
+  animation: dashboardEnter 0.5s ease-out;
+}
+
+@keyframes dashboardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  main {
+    padding: 14px !important;
+  }
+
+  header {
+    padding: 14px !important;
+  }
+}

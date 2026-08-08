@@ -1,696 +1,1768 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactFlow, {
-  Node,
+  Background,
+  Controls,
   Edge,
-  Background
-} from 'reactflow';
-import 'reactflow/dist/style.css';
-
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip
-} from 'recharts';
+  Node,
+  Position,
+} from "reactflow";
+import "reactflow/dist/style.css";
 
 import {
   Activity,
   AlertTriangle,
-  ShieldCheck,
+  CheckCircle2,
+  Database,
+  Gauge,
+  GitBranch,
+  Layers3,
   Play,
+  Radio,
+  Server,
+  ShieldCheck,
   Square,
   Zap,
-  Server,
-  Database,
-  Layers,
-  Info,
-  CheckCircle2
-} from 'lucide-react';
-// Interfaces mapping backend models
+} from "lucide-react";
+
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+type Status = "CONNECTED" | "DISCONNECTED" | "CONNECTING";
+type PipelineState = "RUNNING" | "PAUSED";
+
 interface Incident {
   id: string;
   timestamp: string;
-  severity: 'WARNING' | 'CRITICAL';
+  severity: "WARNING" | "CRITICAL";
   ruleViolated: string;
   affectedNode: string;
   message: string;
   resolved: boolean;
 }
 
-interface TelemetryPoint {
+interface ChartPoint {
   time: string;
   throughput: number;
   errorRate: number;
 }
 
+interface Metrics {
+  throughput: number;
+  errorRate: number;
+  processedTotal: number;
+  activeConnections: number;
+}
+
 export default function App() {
-  // Connection states
-  const [wsStatus, setWsStatus] = useState<'CONNECTED' | 'DISCONNECTED' | 'CONNECTING'>('CONNECTING');
-  const [pipelineState, setPipelineState] = useState<'RUNNING' | 'PAUSED'>('RUNNING');
-  const [anomalyActive, setAnomalyActive] = useState<boolean>(false);
-  const [circuitBreakerEngaged, setCircuitBreakerEngaged] = useState<boolean>(false);
-  const [circuitBreakerReason, setCircuitBreakerReason] = useState<string>('');
-  
-  // Real-time metrics
-  const [currentMetrics, setCurrentMetrics] = useState({
-    throughput: 0,
-    errorRate: 0.0,
+  const [wsStatus, setWsStatus] =
+    useState<Status>("DISCONNECTED");
+
+  const [pipelineState, setPipelineState] =
+    useState<PipelineState>("RUNNING");
+
+  const [anomalyActive, setAnomalyActive] =
+    useState(false);
+
+  const [circuitBreakerEngaged, setCircuitBreakerEngaged] =
+    useState(false);
+
+  const [metrics, setMetrics] = useState<Metrics>({
+    throughput: 112,
+    errorRate: 0.41,
     processedTotal: 0,
-    activeConnections: 0
+    activeConnections: 1,
   });
 
-  // Series for Recharts
-  const [chartData, setChartData] = useState<TelemetryPoint[]>([]);
-  
-  // Incidents log
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [chartData, setChartData] =
+    useState<ChartPoint[]>([]);
 
-  // Great expectations status panel
-  const [geReport, setGeReport] = useState<any>(null);
+  const [incidents, setIncidents] =
+    useState<Incident[]>([]);
 
-  // REST endpoints integration
+  const [geReport, setGeReport] =
+    useState<any>(null);
+
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const mountedRef = useRef(true);
+
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/pipeline-status');
+      const res = await fetch("/api/pipeline-status");
+
+      if (!res.ok) {
+        throw new Error("Pipeline status request failed");
+      }
+
       const data = await res.json();
-      setPipelineState(data.status);
-      setAnomalyActive(data.anomalyModeActive);
-      setCircuitBreakerEngaged(data.circuitBreakerState.status === 'ENGAGED');
-      setCircuitBreakerReason(data.circuitBreakerState.reason);
-      setGeReport(data.greatExpectationsReport);
-    } catch (e) {
-      console.warn('API server offline, running in mock simulation mode.');
+
+      if (!mountedRef.current) return;
+
+      setPipelineState(
+        data.status === "PAUSED"
+          ? "PAUSED"
+          : "RUNNING"
+      );
+
+      setAnomalyActive(
+        Boolean(data.anomalyModeActive)
+      );
+
+      setCircuitBreakerEngaged(
+        data.circuitBreakerState?.status ===
+          "ENGAGED"
+      );
+
+      setGeReport(
+        data.greatExpectationsReport ?? null
+      );
+    } catch (error) {
+      console.error(
+        "Failed to fetch pipeline status:",
+        error
+      );
     }
   }, []);
 
   const fetchIncidents = useCallback(async () => {
     try {
-      const res = await fetch('/api/incidents');
+      const res = await fetch("/api/incidents");
+
+      if (!res.ok) {
+        throw new Error("Incident request failed");
+      }
+
       const data = await res.json();
-      setIncidents(data);
-    } catch (e) {
-      // Fallback local mock incidents
+
+      if (!mountedRef.current) return;
+
+      setIncidents(
+        Array.isArray(data) ? data : []
+      );
+    } catch (error) {
+      console.error(
+        "Failed to fetch incidents:",
+        error
+      );
     }
   }, []);
 
-  // Set up WebSocket connection with automatic retry
+  /*
+   * IMPORTANT:
+   * This effect runs ONLY ONCE.
+   *
+   * Previously the effect depended on:
+   * anomalyActive
+   * pipelineState
+   * wsStatus
+   *
+   * That caused a new WebSocket to be created
+   * every time the dashboard state changed.
+   *
+   * Now there is only ONE WebSocket connection.
+   */
   useEffect(() => {
-    let ws: WebSocket;
-    let reconnectTimeout: any;
+    mountedRef.current = true;
 
-    const connectWS = () => {
-      setWsStatus('CONNECTING');
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host; // Proxied via Vite or direct gateway
-      // Since backend runs on 3001, connect directly if in separate local dev, 
-      // or proxy if combined. Let's make it robust:
-      const wsUrl = host.includes('3000') 
-        ? `${protocol}//${window.location.hostname}:3001`
-        : `${protocol}//${host}`;
-
-      ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        setWsStatus('CONNECTED');
-        console.log('Connected to IceStream telemetry WebSocket.');
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          
-          if (payload.event === 'INITIAL_SYNC') {
-            setPipelineState(payload.status);
-            setAnomalyActive(payload.isAnomalyActive);
-            setIncidents(payload.incidents);
-          } 
-          else if (payload.event === 'METRICS_UPDATE') {
-            const data = payload.metrics;
-            setCurrentMetrics(data);
-            
-            // Append line chart series up to 20 ticks
-            setChartData((prev) => {
-              const updated = [
-                ...prev,
-                {
-                  time: new Date(payload.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                  throughput: data.throughput,
-                  errorRate: data.errorRate
-                }
-              ];
-              return updated.slice(-20); // Slider constraints
-            });
-          }
-          else if (payload.event === 'INCIDENT_TRIGGERED') {
-            setIncidents((prev) => [payload.data, ...prev]);
-            setAnomalyActive(true);
-            setCircuitBreakerEngaged(true);
-            fetchStatus(); // Refresh quality stats
-          }
-          else if (payload.event === 'INCIDENTS_RESOLVED') {
-            setAnomalyActive(false);
-            setCircuitBreakerEngaged(false);
-            fetchStatus();
-            fetchIncidents();
-          }
-          else if (payload.event === 'PIPELINE_STATE_CHANGED') {
-            setPipelineState(payload.status);
-          }
-        } catch (e) {
-          console.error('Error parsing WS message:', e);
-        }
-      };
-
-      ws.onclose = () => {
-        setWsStatus('DISCONNECTED');
-        console.log('WS connection closed. Reconnecting in 3s...');
-        reconnectTimeout = setTimeout(connectWS, 3000);
-      };
-
-      ws.onerror = () => {
-        ws.close();
-      };
-    };
-
-    connectWS();
     fetchStatus();
     fetchIncidents();
 
-    // Secondary interval fallback for metrics in case backend isn't booted
-    const mockInterval = setInterval(() => {
-      if (wsStatus === 'CONNECTED') return; // Bypass if active
-      
-      const simulatedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const mockLoad = pipelineState === 'RUNNING' ? 120 + Math.floor(Math.random() * 20 - 10) : 0;
-      const mockErr = pipelineState === 'RUNNING' ? (anomalyActive ? 15.4 + Math.random() * 2 : 0.3 + Math.random() * 0.2) : 0;
-      
-      setCurrentMetrics({
-        throughput: mockLoad,
-        errorRate: parseFloat(mockErr.toFixed(2)),
-        processedTotal: currentMetrics.processedTotal + mockLoad,
-        activeConnections: 1
-      });
+    let reconnecting = false;
 
-      setChartData((prev) => [
-        ...prev,
-        { time: simulatedTime, throughput: mockLoad, errorRate: parseFloat(mockErr.toFixed(2)) }
-      ].slice(-20));
-    }, 1000);
+    const connect = () => {
+      if (!mountedRef.current) return;
+
+      if (
+        socketRef.current &&
+        (
+          socketRef.current.readyState ===
+            WebSocket.OPEN ||
+          socketRef.current.readyState ===
+            WebSocket.CONNECTING
+        )
+      ) {
+        return;
+      }
+
+      try {
+        setWsStatus("CONNECTING");
+
+        const protocol =
+          window.location.protocol === "https:"
+            ? "wss:"
+            : "ws:";
+
+        const host =
+          window.location.hostname || "localhost";
+
+        const socket = new WebSocket(
+          `${protocol}//${host}:3001`
+        );
+
+        socketRef.current = socket;
+
+        socket.onopen = () => {
+          if (!mountedRef.current) return;
+
+          reconnecting = false;
+
+          setWsStatus("CONNECTED");
+
+          console.log(
+            "IceStream WebSocket connected"
+          );
+        };
+
+        socket.onmessage = (event) => {
+          if (!mountedRef.current) return;
+
+          try {
+            const payload = JSON.parse(
+              event.data
+            );
+
+            /*
+             * LIVE METRICS
+             */
+            if (
+              payload.event ===
+              "METRICS_UPDATE"
+            ) {
+              const m = payload.metrics;
+
+              if (!m) return;
+
+              const throughput =
+                Number(m.throughput ?? 0);
+
+              const errorRate =
+                Number(m.errorRate ?? 0);
+
+              const processedTotal =
+                Number(
+                  m.processedTotal ?? 0
+                );
+
+              const activeConnections =
+                Number(
+                  m.activeConnections ?? 1
+                );
+
+              setMetrics({
+                throughput,
+                errorRate,
+                processedTotal,
+                activeConnections,
+              });
+
+              const chartPoint: ChartPoint = {
+                time: new Date(
+                  payload.timestamp ||
+                    Date.now()
+                ).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                }),
+                throughput,
+                errorRate,
+              };
+
+              setChartData((prev) =>
+                [...prev, chartPoint].slice(
+                  -30
+                )
+              );
+            }
+
+            /*
+             * INITIAL SYNC
+             */
+            if (
+              payload.event ===
+              "INITIAL_SYNC"
+            ) {
+              setPipelineState(
+                payload.status ===
+                  "PAUSED"
+                  ? "PAUSED"
+                  : "RUNNING"
+              );
+
+              setAnomalyActive(
+                Boolean(
+                  payload.isAnomalyActive
+                )
+              );
+
+              setCircuitBreakerEngaged(
+                Boolean(
+                  payload.circuitBreakerState
+                    ?.status === "ENGAGED"
+                )
+              );
+
+              if (
+                Array.isArray(
+                  payload.incidents
+                )
+              ) {
+                setIncidents(
+                  payload.incidents
+                );
+              }
+
+              if (payload.metrics) {
+                setMetrics({
+                  throughput: Number(
+                    payload.metrics
+                      .throughput ?? 0
+                  ),
+                  errorRate: Number(
+                    payload.metrics
+                      .errorRate ?? 0
+                  ),
+                  processedTotal: Number(
+                    payload.metrics
+                      .processedTotal ?? 0
+                  ),
+                  activeConnections: Number(
+                    payload.metrics
+                      .activeConnections ?? 1
+                  ),
+                });
+              }
+            }
+
+            /*
+             * INCIDENT TRIGGERED
+             */
+            if (
+              payload.event ===
+              "INCIDENT_TRIGGERED"
+            ) {
+              setAnomalyActive(true);
+              setCircuitBreakerEngaged(
+                true
+              );
+
+              if (payload.data) {
+                setIncidents((prev) => {
+                  const exists =
+                    prev.some(
+                      (item) =>
+                        item.id ===
+                        payload.data.id
+                    );
+
+                  if (exists) {
+                    return prev;
+                  }
+
+                  return [
+                    payload.data,
+                    ...prev,
+                  ];
+                });
+              }
+
+              fetchStatus();
+              fetchIncidents();
+            }
+
+            /*
+             * INCIDENTS RESOLVED
+             */
+            if (
+              payload.event ===
+              "INCIDENTS_RESOLVED"
+            ) {
+              setAnomalyActive(false);
+
+              setCircuitBreakerEngaged(
+                false
+              );
+
+              fetchStatus();
+              fetchIncidents();
+            }
+
+            /*
+             * PIPELINE STATE
+             */
+            if (
+              payload.event ===
+              "PIPELINE_STATE_CHANGED"
+            ) {
+              setPipelineState(
+                payload.status ===
+                  "PAUSED"
+                  ? "PAUSED"
+                  : "RUNNING"
+              );
+            }
+          } catch (error) {
+            console.error(
+              "Invalid WebSocket payload:",
+              error
+            );
+          }
+        };
+
+        socket.onerror = (error) => {
+          console.error(
+            "IceStream WebSocket error:",
+            error
+          );
+        };
+
+        socket.onclose = () => {
+          if (!mountedRef.current) return;
+
+          setWsStatus("DISCONNECTED");
+
+          socketRef.current = null;
+
+          /*
+           * Reconnect only ONCE.
+           */
+          if (!reconnecting) {
+            reconnecting = true;
+
+            if (
+              reconnectTimerRef.current
+            ) {
+              clearTimeout(
+                reconnectTimerRef.current
+              );
+            }
+
+            reconnectTimerRef.current =
+              setTimeout(() => {
+                reconnecting = false;
+                connect();
+              }, 4000);
+          }
+        };
+      } catch (error) {
+        console.error(
+          "WebSocket connection failed:",
+          error
+        );
+
+        setWsStatus("DISCONNECTED");
+
+        if (!reconnecting) {
+          reconnecting = true;
+
+          reconnectTimerRef.current =
+            setTimeout(() => {
+              reconnecting = false;
+              connect();
+            }, 4000);
+        }
+      }
+    };
+
+    connect();
+
+    /*
+     * Refresh REST data periodically.
+     * This does NOT create another WebSocket.
+     */
+    const refreshTimer =
+      setInterval(() => {
+        fetchStatus();
+        fetchIncidents();
+      }, 10000);
 
     return () => {
-      if (ws) ws.close();
-      clearTimeout(reconnectTimeout);
-      clearInterval(mockInterval);
+      mountedRef.current = false;
+
+      clearInterval(refreshTimer);
+
+      if (
+        reconnectTimerRef.current
+      ) {
+        clearTimeout(
+          reconnectTimerRef.current
+        );
+      }
+
+      if (socketRef.current) {
+        socketRef.current.onclose =
+          null;
+
+        socketRef.current.close();
+
+        socketRef.current = null;
+      }
     };
-  }, [wsStatus, pipelineState, anomalyActive, currentMetrics.processedTotal, fetchStatus, fetchIncidents]);
+  }, [fetchStatus, fetchIncidents]);
 
-  // Action: Toggle pipeline stream
-  const handleTogglePipeline = async () => {
+  const togglePipeline = async () => {
     try {
-      const res = await fetch('/api/toggle-pipeline', { method: 'POST' });
+      const res = await fetch(
+        "/api/toggle-pipeline",
+        {
+          method: "POST",
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          "Failed to toggle pipeline"
+        );
+      }
+
       const data = await res.json();
-      setPipelineState(data.status);
-    } catch (e) {
-      // Local state fallback
-      setPipelineState(prev => prev === 'RUNNING' ? 'PAUSED' : 'RUNNING');
+
+      setPipelineState(
+        data.status === "PAUSED"
+          ? "PAUSED"
+          : "RUNNING"
+      );
+
+      await fetchStatus();
+    } catch (error) {
+      console.error(
+        "Pipeline toggle failed:",
+        error
+      );
     }
   };
 
-  // Action: Inject / Resolve Anomaly
-  const handleTriggerAnomaly = async () => {
+  const toggleAnomaly = async () => {
     try {
-      const res = await fetch('/api/trigger-anomaly', { method: 'POST' });
-      const data = await res.json();
-      setAnomalyActive(data.anomalyActive);
-      setCircuitBreakerEngaged(data.anomalyActive);
-      fetchStatus();
-      fetchIncidents();
-    } catch (e) {
-      // Local state fallback
-      const newState = !anomalyActive;
-      setAnomalyActive(newState);
-      setCircuitBreakerEngaged(newState);
-      
-      if (newState) {
-        const localInc: Incident = {
-          id: `INC-${Math.floor(1000 + Math.random() * 9000)}`,
-          timestamp: new Date().toISOString(),
-          severity: "CRITICAL",
-          ruleViolated: "Null tax_amount > 2% (Circuit Breaker Triggered)",
-          affectedNode: "Apache Flink",
-          message: "FALLBACK TRIGGER: Simulation anomaly injected. Redirecting load to ecommerce_events_dlq.",
-          resolved: false
-        };
-        setIncidents(prev => [localInc, ...prev]);
-      } else {
-        setIncidents(prev => prev.map(inc => ({ ...inc, resolved: true })));
+      const res = await fetch(
+        "/api/trigger-anomaly",
+        {
+          method: "POST",
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          "Failed to toggle anomaly"
+        );
       }
+
+      const data = await res.json();
+
+      setAnomalyActive(
+        Boolean(data.anomalyActive)
+      );
+
+      setCircuitBreakerEngaged(
+        Boolean(data.anomalyActive)
+      );
+
+      await fetchStatus();
+      await fetchIncidents();
+    } catch (error) {
+      console.error(
+        "Anomaly request failed:",
+        error
+      );
     }
   };
 
-  // React Flow configuration mapping data lineage Kafka -> Flink -> S3 (Main) / S3 (DLQ)
-  const nodes: Node[] = useMemo(() => {
-    const isError = anomalyActive;
-    
-    return [
+  const nodes: Node[] = useMemo(
+    () => [
       {
-        id: 'node-kafka',
-        type: 'input',
-        position: { x: 50, y: 150 },
-        data: { 
-          label: (
-            <div className="flex items-center gap-2 px-3 py-2 text-xs font-mono">
-              <Layers className="w-4 h-4 text-cyan-400" />
-              <div>
-                <span className="font-bold text-white block">Kafka Ingestion</span>
-                <span className="text-[9px] text-slate-400">topic: checkout_events</span>
-              </div>
-            </div>
-          )
+        id: "kafka",
+        position: {
+          x: 30,
+          y: 115,
         },
-        style: { 
-          background: 'rgba(15, 23, 42, 0.95)', 
-          border: '1.5px solid #22d3ee',
-          boxShadow: '0 0 10px rgba(34,211,238,0.1)'
-        }
+        sourcePosition: Position.Right,
+        data: {
+          label: (
+            <NodeCard
+              icon={<Radio size={18} />}
+              title="Kafka"
+              subtitle="checkout_events"
+              color="cyan"
+              status={
+                pipelineState === "RUNNING"
+                  ? "LIVE"
+                  : "PAUSED"
+              }
+            />
+          ),
+        },
+        style: nodeStyle("#22d3ee"),
       },
-      {
-        id: 'node-flink',
-        position: { x: 280, y: 150 },
-        data: { 
-          label: (
-            <div className="flex items-center gap-2 px-3 py-2 text-xs font-mono">
-              <Server className="w-4 h-4 text-purple-400" />
-              <div>
-                <span className="font-bold text-white block">Flink Stream Engine</span>
-                <span className="text-[9px] text-slate-400">Circuit Breaker: {isError ? '💥 ENGAGED' : '✓ CLOSED'}</span>
-              </div>
-            </div>
-          )
-        },
-        style: { 
-          background: 'rgba(15, 23, 42, 0.95)', 
-          border: isError ? '1.5px solid #f43f5e' : '1.5px solid #a855f7',
-          boxShadow: isError ? '0 0 15px rgba(244,63,94,0.2)' : '0 0 10px rgba(168,85,247,0.1)'
-        }
-      },
-      {
-        id: 'node-iceberg-main',
-        type: 'output',
-        position: { x: 560, y: 70 },
-        data: { 
-          label: (
-            <div className="flex items-center gap-2 px-3 py-2 text-xs font-mono">
-              <Database className="w-4 h-4 text-emerald-400" />
-              <div>
-                <span className="font-bold text-white block">Iceberg ecommerce_events</span>
-                <span className="text-[9px] text-slate-400">Active: {!isError ? '🟢 YES' : '⚪ STALLED'}</span>
-              </div>
-            </div>
-          )
-        },
-        style: { 
-          background: 'rgba(15, 23, 42, 0.95)', 
-          border: !isError ? '1.5px solid #10b981' : '1.5px solid #475569',
-          boxShadow: !isError ? '0 0 10px rgba(16,185,129,0.1)' : 'none'
-        }
-      },
-      {
-        id: 'node-iceberg-dlq',
-        type: 'output',
-        position: { x: 560, y: 230 },
-        data: { 
-          label: (
-            <div className="flex items-center gap-2 px-3 py-2 text-xs font-mono">
-              <AlertTriangle className={`w-4 h-4 ${isError ? 'text-rose-500 animate-pulse' : 'text-slate-400'}`} />
-              <div>
-                <span className="font-bold text-white block">Iceberg events_dlq</span>
-                <span className="text-[9px] text-slate-400">Diverted Traffic: {isError ? '🔴 ACTIVE' : '⚪ IDLE'}</span>
-              </div>
-            </div>
-          )
-        },
-        style: { 
-          background: 'rgba(15, 23, 42, 0.95)', 
-          border: isError ? '1.5px solid #ef4444' : '1.5px solid #334155',
-          boxShadow: isError ? '0 0 15px rgba(239,68,68,0.2)' : 'none'
-        }
-      }
-    ];
-  }, [anomalyActive]);
 
-  const edges: Edge[] = useMemo(() => {
-    const isError = anomalyActive;
-    return [
-      { 
-        id: 'e-k-f', 
-        source: 'node-kafka', 
-        target: 'node-flink', 
-        animated: pipelineState === 'RUNNING',
-        style: { stroke: '#22d3ee' }
+      {
+        id: "flink",
+        position: {
+          x: 280,
+          y: 115,
+        },
+        targetPosition: Position.Left,
+        sourcePosition: Position.Right,
+        data: {
+          label: (
+            <NodeCard
+              icon={<Server size={18} />}
+              title="Apache Flink"
+              subtitle="Stream Processor"
+              color="purple"
+              status={
+                anomalyActive
+                  ? "BREAKER ON"
+                  : "HEALTHY"
+              }
+            />
+          ),
+        },
+        style: nodeStyle(
+          anomalyActive
+            ? "#fb7185"
+            : "#a78bfa"
+        ),
       },
-      { 
-        id: 'e-f-main', 
-        source: 'node-flink', 
-        target: 'node-iceberg-main', 
-        animated: pipelineState === 'RUNNING' && !isError,
-        style: { stroke: !isError ? '#10b981' : '#475569', strokeDasharray: !isError ? 'none' : '5 5' }
+
+      {
+        id: "iceberg",
+        position: {
+          x: 540,
+          y: 40,
+        },
+        targetPosition: Position.Left,
+        data: {
+          label: (
+            <NodeCard
+              icon={<Database size={18} />}
+              title="Iceberg"
+              subtitle="ecommerce_events"
+              color="emerald"
+              status={
+                anomalyActive
+                  ? "PROTECTED"
+                  : "WRITING"
+              }
+            />
+          ),
+        },
+        style: nodeStyle(
+          anomalyActive
+            ? "#475569"
+            : "#34d399"
+        ),
       },
-      { 
-        id: 'e-f-dlq', 
-        source: 'node-flink', 
-        target: 'node-iceberg-dlq', 
-        animated: pipelineState === 'RUNNING' && isError,
-        style: { stroke: isError ? '#ef4444' : '#334155', strokeDasharray: isError ? 'none' : '5 5' }
-      }
-    ];
-  }, [anomalyActive, pipelineState]);
+
+      {
+        id: "dlq",
+        position: {
+          x: 540,
+          y: 195,
+        },
+        targetPosition: Position.Left,
+        data: {
+          label: (
+            <NodeCard
+              icon={
+                <AlertTriangle size={18} />
+              }
+              title="DLQ"
+              subtitle="events_dlq"
+              color="rose"
+              status={
+                anomalyActive
+                  ? "RECEIVING"
+                  : "IDLE"
+              }
+            />
+          ),
+        },
+        style: nodeStyle(
+          anomalyActive
+            ? "#fb7185"
+            : "#475569"
+        ),
+      },
+    ],
+    [
+      anomalyActive,
+      pipelineState,
+    ]
+  );
+
+  const edges: Edge[] = [
+    {
+      id: "kafka-flink",
+      source: "kafka",
+      target: "flink",
+      animated:
+        pipelineState === "RUNNING",
+      style: {
+        stroke: "#22d3ee",
+        strokeWidth: 3,
+      },
+    },
+
+    {
+      id: "flink-iceberg",
+      source: "flink",
+      target: "iceberg",
+      animated:
+        pipelineState === "RUNNING" &&
+        !anomalyActive,
+      style: {
+        stroke: anomalyActive
+          ? "#334155"
+          : "#34d399",
+        strokeWidth: 3,
+      },
+    },
+
+    {
+      id: "flink-dlq",
+      source: "flink",
+      target: "dlq",
+      animated:
+        pipelineState === "RUNNING" &&
+        anomalyActive,
+      style: {
+        stroke: anomalyActive
+          ? "#fb7185"
+          : "#334155",
+        strokeWidth: 3,
+      },
+    },
+  ];
+
+  const health = anomalyActive ? 64 : 98;
+
+  const activeIncidents =
+    incidents.filter(
+      (item) => !item.resolved
+    );
+
+  const displayedIncidents =
+    incidents.slice(0, 5);
+
+  const qualitySuccess =
+    geReport?.success_rate_percent ??
+    (anomalyActive ? 50 : 100);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-slate-950">
-      
-      {/* HEADER BAR */}
-      <header className="border-b border-slate-900 bg-slate-900/40 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-black tracking-tight text-white font-mono flex items-center gap-1.5">
-              <span className="text-cyan-400 text-lg">⚡</span>
-              IceStream
-            </h1>
-            <span className="text-[9px] bg-cyan-950/40 text-cyan-400 font-bold border border-cyan-500/20 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-              Real-Time Lakehouse Observability
-            </span>
-          </div>
-          <p className="text-xs text-slate-400 mt-0.5">Corporate Internship Observability Monorepo Workspace</p>
-        </div>
+    <div className="min-h-screen bg-[#020617] text-white">
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-40 -left-40 w-[500px] h-[500px] bg-cyan-500/10 blur-[120px] rounded-full" />
 
-        {/* WebSocket status badge */}
-        <div className="flex items-center gap-2 bg-slate-900 px-3.5 py-1.5 rounded-xl border border-slate-800 text-xs">
-          <span className={`w-2.5 h-2.5 rounded-full ${
-            wsStatus === 'CONNECTED' ? 'bg-emerald-500 animate-pulse' : 
-            wsStatus === 'CONNECTING' ? 'bg-amber-500' : 'bg-rose-500'
-          }`} />
-          <span className="font-mono text-slate-300">Gateway: {wsStatus}</span>
+        <div className="absolute top-0 right-0 w-[450px] h-[450px] bg-violet-500/10 blur-[120px] rounded-full" />
+      </div>
+
+      <header className="relative z-10 border-b border-white/10 bg-slate-950/75 backdrop-blur-xl px-7 py-5">
+        <div className="max-w-[1500px] mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+              <Zap
+                size={23}
+                className="text-white fill-white"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center gap-3">
+                <h1 className="text-2xl font-black tracking-tight">
+                  IceStream
+                </h1>
+
+                <span className="text-[10px] font-bold tracking-widest uppercase px-2.5 py-1 rounded-full bg-cyan-400/10 border border-cyan-400/20 text-cyan-300">
+                  LIVE OBSERVABILITY
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-500 mt-1">
+                Real-Time Lakehouse Data Reliability Platform
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-3 px-4 py-2 rounded-xl bg-white/[0.03] border border-white/10">
+              <span
+                className={`w-2.5 h-2.5 rounded-full ${
+                  wsStatus === "CONNECTED"
+                    ? "bg-emerald-400 shadow-lg shadow-emerald-400/60"
+                    : wsStatus ===
+                      "CONNECTING"
+                    ? "bg-amber-400"
+                    : "bg-rose-400"
+                }`}
+              />
+
+              <div>
+                <div className="text-[9px] uppercase tracking-widest text-slate-500">
+                  Gateway
+                </div>
+
+                <div className="text-xs font-semibold">
+                  {wsStatus}
+                </div>
+              </div>
+            </div>
+
+            <div className="px-3 py-2 rounded-xl bg-emerald-400/10 border border-emerald-400/20 text-emerald-300 text-xs font-semibold">
+              v1.0.0
+            </div>
+          </div>
         </div>
       </header>
 
-      {/* OPERATIONAL ALERTS / BANNERS */}
       {circuitBreakerEngaged && (
-        <div className="bg-rose-950/80 border-b border-rose-500/40 px-6 py-3 flex items-center justify-between gap-4 text-xs text-rose-300 animate-pulse">
-          <div className="flex items-center gap-2.5">
-            <AlertTriangle className="w-5 h-5 text-rose-500 shrink-0" />
-            <div>
-              <span className="font-black font-mono block">CRITICAL: FLINK CIRCUIT BREAKER TRIGGERED</span>
-              <span className="text-[11px] text-rose-400">{circuitBreakerReason || 'Null tax values exceed 2% limit. Inbound events redirected to DLQ.'}</span>
+        <div className="relative z-10 border-b border-rose-500/30 bg-rose-500/[0.08] px-7 py-3">
+          <div className="max-w-[1500px] mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-rose-500/15 flex items-center justify-center">
+                <AlertTriangle
+                  size={17}
+                  className="text-rose-400"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs font-bold text-rose-300">
+                  CIRCUIT BREAKER ENGAGED
+                </div>
+
+                <div className="text-[11px] text-rose-400/70">
+                  Null tax ratio exceeded the
+                  2.0% safety threshold. Traffic
+                  diverted to DLQ.
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="px-2.5 py-0.5 bg-rose-500/20 border border-rose-500/30 text-[9px] font-bold uppercase rounded font-mono">
-            Diverting Stream
+
+            <span className="hidden sm:block text-[9px] uppercase tracking-widest font-bold text-rose-300 border border-rose-400/20 px-3 py-1 rounded-full">
+              Incident Active
+            </span>
           </div>
         </div>
       )}
 
-      {/* DASHBOARD GRID */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* LEFT COLUMN: ACTIVE TOPOLOGY & METRICS (8 cols) */}
-        <div className="lg:col-span-8 flex flex-col gap-6">
-          
-          {/* CONTROL STRIP */}
-          <div className="bg-slate-900/60 border border-slate-850 p-4 rounded-2xl flex flex-wrap justify-between items-center gap-4">
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={handleTogglePipeline}
-                className={`px-4 py-2 text-xs font-extrabold rounded-xl transition-all flex items-center gap-2 cursor-pointer ${
-                  pipelineState === 'RUNNING' 
-                    ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20' 
-                    : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
-                }`}
-              >
-                {pipelineState === 'RUNNING' ? (
-                  <>
-                    <Square className="w-3.5 h-3.5 fill-current" />
-                    Halt Ingestion
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    Resume Ingestion
-                  </>
-                )}
-              </button>
-
-              <button
-                onClick={handleTriggerAnomaly}
-                className={`px-4 py-2 text-xs font-extrabold rounded-xl transition-all flex items-center gap-2 cursor-pointer ${
-                  anomalyActive 
-                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30' 
-                    : 'bg-slate-800 text-slate-300 border border-slate-700 hover:text-white'
-                }`}
-              >
-                <Zap className={`w-3.5 h-3.5 ${anomalyActive ? 'text-rose-400 fill-rose-500' : ''}`} />
-                {anomalyActive ? 'Resolve Injected Anomaly' : 'Inject Anomalous Stream'}
-              </button>
+      <main className="relative z-10 max-w-[1500px] mx-auto px-7 py-7 space-y-6">
+        <section className="flex flex-col lg:flex-row lg:items-end justify-between gap-5">
+          <div>
+            <div className="flex items-center gap-2 text-cyan-400 text-xs font-bold uppercase tracking-[0.2em] mb-2">
+              <Activity size={14} />
+              System Overview
             </div>
 
-            <div className="flex items-center gap-4 text-xs font-mono text-slate-400">
-              <div>State: <span className={`font-bold ${pipelineState === 'RUNNING' ? 'text-emerald-400' : 'text-slate-500'}`}>{pipelineState}</span></div>
-              <div className="w-px h-4 bg-slate-800" />
-              <div>Fault Rate limit: <span className="text-cyan-400 font-bold">2.0%</span></div>
-            </div>
+            <h2 className="text-3xl md:text-4xl font-black tracking-tight">
+              Streaming Operations
+            </h2>
+
+            <p className="text-sm text-slate-500 mt-2">
+              Monitor ingestion, quality, lineage and
+              storage health in real time.
+            </p>
           </div>
 
-          {/* TELEMETRY CARDS */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-slate-900/30 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest font-mono">Stream Throughput</span>
-              <div className="flex items-baseline gap-1.5 mt-2">
-                <span className="text-2xl font-black text-white font-mono">{currentMetrics.throughput}</span>
-                <span className="text-[10px] text-slate-400 font-mono">evt/sec</span>
-              </div>
-              <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
-                <Activity className="w-3 h-3 text-cyan-400 animate-pulse" />
-                Live Kafka Broker load
-              </p>
-            </div>
+          <div className="flex gap-3">
+            <button
+              onClick={togglePipeline}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold border transition ${
+                pipelineState === "RUNNING"
+                  ? "bg-amber-400/10 border-amber-400/20 text-amber-300 hover:bg-amber-400/20"
+                  : "bg-emerald-400/10 border-emerald-400/20 text-emerald-300 hover:bg-emerald-400/20"
+              }`}
+            >
+              {pipelineState === "RUNNING" ? (
+                <>
+                  <Square
+                    size={14}
+                    fill="currentColor"
+                  />
+                  Halt Ingestion
+                </>
+              ) : (
+                <>
+                  <Play
+                    size={14}
+                    fill="currentColor"
+                  />
+                  Resume Ingestion
+                </>
+              )}
+            </button>
 
-            <div className="bg-slate-900/30 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest font-mono">Null Tax Ratio</span>
-              <div className="flex items-baseline gap-1.5 mt-2">
-                <span className={`text-2xl font-black font-mono ${circuitBreakerEngaged ? 'text-rose-500' : 'text-cyan-400'}`}>
-                  {currentMetrics.errorRate}%
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">error rate</span>
-              </div>
-              <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
-                <ShieldCheck className={`w-3 h-3 ${circuitBreakerEngaged ? 'text-rose-500' : 'text-emerald-400'}`} />
-                Threshold limit 2.0%
-              </p>
-            </div>
+            <button
+              onClick={toggleAnomaly}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold border transition ${
+                anomalyActive
+                  ? "bg-rose-500/15 border-rose-400/30 text-rose-300"
+                  : "bg-violet-500/10 border-violet-400/20 text-violet-300 hover:bg-violet-500/20"
+              }`}
+            >
+              <Zap size={14} />
 
-            <div className="bg-slate-900/30 border border-slate-850 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest font-mono">Total Aggregated</span>
-              <div className="flex items-baseline gap-1.5 mt-2">
-                <span className="text-2xl font-black text-white font-mono">{currentMetrics.processedTotal.toLocaleString()}</span>
-                <span className="text-[10px] text-slate-400 font-mono">events</span>
-              </div>
-              <p className="text-[10px] text-slate-400 mt-1">Sum of commits inside S3</p>
-            </div>
+              {anomalyActive
+                ? "Resolve Anomaly"
+                : "Inject Anomaly"}
+            </button>
           </div>
+        </section>
 
-          {/* DYNAMIC LINEAGE MAP (React Flow) */}
-          <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-4 flex flex-col min-h-[300px]">
-            <div className="flex justify-between items-center border-b border-slate-850 pb-3 mb-4">
-              <div>
-                <h3 className="text-sm font-extrabold text-white">Dynamic Lineage Network Trace</h3>
-                <p className="text-[11px] text-slate-400">Visual mapping of active streams diverted by circuit breaker thresholds.</p>
-              </div>
-              <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono uppercase">React Flow Canvas</span>
-            </div>
+        <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <MetricCard
+            icon={<Gauge />}
+            label="Stream Throughput"
+            value={metrics.throughput.toLocaleString()}
+            unit="evt/s"
+            detail="Kafka ingestion rate"
+            color="cyan"
+            trend="+8.4%"
+          />
 
-            <div className="flex-1 h-[220px] bg-slate-950/60 rounded-xl overflow-hidden relative border border-slate-850">
+          <MetricCard
+            icon={<ShieldCheck />}
+            label="Null Tax Ratio"
+            value={metrics.errorRate.toFixed(2)}
+            unit="%"
+            detail="Safety threshold 2.0%"
+            color={
+              anomalyActive
+                ? "rose"
+                : "emerald"
+            }
+            trend={
+              anomalyActive
+                ? "CRITICAL"
+                : metrics.errorRate >= 1.5
+                ? "WARNING"
+                : "HEALTHY"
+            }
+          />
+
+          <MetricCard
+            icon={<Database />}
+            label="Events Processed"
+            value={metrics.processedTotal.toLocaleString()}
+            unit="events"
+            detail="Iceberg commits"
+            color="violet"
+            trend="+12.6%"
+          />
+
+          <MetricCard
+            icon={<Radio />}
+            label="Active Connections"
+            value={metrics.activeConnections.toString()}
+            unit="streams"
+            detail="Live pipeline links"
+            color="blue"
+            trend="STABLE"
+          />
+        </section>
+
+        <section className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          <div className="xl:col-span-8 rounded-3xl border border-white/10 bg-white/[0.025] backdrop-blur-xl overflow-hidden">
+            <PanelHeader
+              icon={<GitBranch size={17} />}
+              title="Live Data Lineage"
+              subtitle="Kafka → Flink → Iceberg"
+              badge={
+                anomalyActive
+                  ? "DIVERTING"
+                  : pipelineState ===
+                    "RUNNING"
+                  ? "STREAMING"
+                  : "PAUSED"
+              }
+              badgeColor={
+                anomalyActive
+                  ? "rose"
+                  : pipelineState ===
+                    "RUNNING"
+                  ? "emerald"
+                  : "violet"
+              }
+            />
+
+            <div className="h-[390px] bg-[#030914]">
               <ReactFlow
                 nodes={nodes}
                 edges={edges}
                 fitView
-                preventScrolling
+                fitViewOptions={{
+                  padding: 0.25,
+                }}
+                nodesDraggable={false}
+                nodesConnectable={false}
                 zoomOnScroll={false}
-                zoomOnPinch={false}
-                panOnDrag={false}
               >
-                <Background color="rgba(148, 163, 184, 0.05)" gap={16} />
+                <Background
+                  gap={22}
+                  color="rgba(148,163,184,0.08)"
+                />
+
+                <Controls
+                  showInteractive={false}
+                  className="!bg-slate-900/80 !border-white/10"
+                />
               </ReactFlow>
             </div>
+
+            <div className="grid grid-cols-3 border-t border-white/10">
+              <StatusCell
+                label="INGESTION"
+                value="Kafka"
+                status={
+                  pipelineState ===
+                  "RUNNING"
+                    ? "LIVE"
+                    : "PAUSED"
+                }
+                statusColor={
+                  pipelineState ===
+                  "RUNNING"
+                    ? "emerald"
+                    : "amber"
+                }
+              />
+
+              <StatusCell
+                label="PROCESSING"
+                value="Flink"
+                status={
+                  anomalyActive
+                    ? "PROTECTED"
+                    : "HEALTHY"
+                }
+                statusColor={
+                  anomalyActive
+                    ? "rose"
+                    : "emerald"
+                }
+              />
+
+              <StatusCell
+                label="STORAGE"
+                value="Iceberg"
+                status={
+                  anomalyActive
+                    ? "PROTECTED"
+                    : "WRITING"
+                }
+                statusColor={
+                  anomalyActive
+                    ? "amber"
+                    : "emerald"
+                }
+              />
+            </div>
           </div>
 
-          {/* TELEMETRY CHART (Recharts) */}
-          <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-4 flex flex-col min-h-[250px]">
-            <div className="flex justify-between items-center border-b border-slate-850 pb-3 mb-4">
+          <div className="xl:col-span-4 rounded-3xl border border-white/10 bg-white/[0.025] backdrop-blur-xl p-5">
+            <div className="flex items-center justify-between mb-6">
               <div>
-                <h3 className="text-sm font-extrabold text-white">Observability Metrics Trace</h3>
-                <p className="text-[11px] text-slate-400">Real-time throughput streams paired with null field incident frequencies.</p>
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                  Platform Health
+                </div>
+
+                <h3 className="text-xl font-black mt-1">
+                  System Status
+                </h3>
               </div>
-              <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono uppercase">Recharts Line Trace</span>
+
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                  anomalyActive
+                    ? "bg-rose-400/10"
+                    : "bg-emerald-400/10"
+                }`}
+              >
+                {anomalyActive ? (
+                  <AlertTriangle
+                    className="text-rose-400"
+                    size={20}
+                  />
+                ) : (
+                  <CheckCircle2
+                    className="text-emerald-400"
+                    size={20}
+                  />
+                )}
+              </div>
             </div>
 
-            <div className="flex-1 h-[180px] pr-4">
-              {chartData.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-xs text-slate-500 font-mono">
-                  Loading streaming observability charts...
+            <div className="flex items-center justify-center py-4">
+              <div
+                className="relative w-44 h-44 rounded-full flex items-center justify-center"
+                style={{
+                  background: `conic-gradient(
+                    #22d3ee 0deg,
+                    #22d3ee ${
+                      health * 3.6
+                    }deg,
+                    rgba(255,255,255,0.05) ${
+                      health * 3.6
+                    }deg
+                  )`,
+                }}
+              >
+                <div className="absolute inset-[10px] rounded-full bg-[#07101d] flex flex-col items-center justify-center">
+                  <span className="text-4xl font-black">
+                    {health}%
+                  </span>
+
+                  <span className="text-[10px] text-slate-500 uppercase tracking-widest">
+                    Health Score
+                  </span>
                 </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.05)" />
-                    <XAxis dataKey="time" stroke="#475569" fontSize={9} tickLine={false} />
-                    <YAxis yAxisId="left" stroke="#22d3ee" fontSize={9} tickLine={false} />
-                    <YAxis yAxisId="right" orientation="right" stroke="#f43f5e" fontSize={9} tickLine={false} />
-                    <Tooltip 
-                      contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', fontSize: '11px' }} 
-                      labelStyle={{ color: '#94a3b8' }}
+              </div>
+            </div>
+
+            <div className="space-y-3 mt-5">
+              <HealthRow
+                label="Kafka Broker"
+                value="Operational"
+                ok
+              />
+
+              <HealthRow
+                label="Flink Processor"
+                value={
+                  anomalyActive
+                    ? "Circuit Breaker"
+                    : "Operational"
+                }
+                ok={!anomalyActive}
+              />
+
+              <HealthRow
+                label="Iceberg Storage"
+                value={
+                  anomalyActive
+                    ? "Protected"
+                    : "Operational"
+                }
+                ok={!anomalyActive}
+              />
+
+              <HealthRow
+                label="Data Quality"
+                value={
+                  anomalyActive
+                    ? "Degraded"
+                    : "100% Valid"
+                }
+                ok={!anomalyActive}
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="grid grid-cols-1 xl:grid-cols-8 gap-6">
+          <div className="xl:col-span-5 rounded-3xl border border-white/10 bg-white/[0.025] backdrop-blur-xl p-5">
+            <PanelHeader
+              icon={<Activity size={17} />}
+              title="Real-Time Telemetry"
+              subtitle="Throughput vs error rate"
+              badge="LIVE"
+              badgeColor="cyan"
+            />
+
+            <div className="h-[270px] mt-4">
+              {chartData.length > 0 ? (
+                <ResponsiveContainer
+                  width="100%"
+                  height="100%"
+                >
+                  <LineChart
+                    data={chartData}
+                  >
+                    <CartesianGrid
+                      stroke="rgba(148,163,184,0.06)"
+                      vertical={false}
                     />
-                    <Line yAxisId="left" type="monotone" dataKey="throughput" name="Load (evt/s)" stroke="#22d3ee" strokeWidth={2} dot={false} />
-                    <Line yAxisId="right" type="monotone" dataKey="errorRate" name="Error Rate (%)" stroke="#f43f5e" strokeWidth={2} dot={false} />
+
+                    <XAxis
+                      dataKey="time"
+                      stroke="#475569"
+                      fontSize={9}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+
+                    <YAxis
+                      yAxisId="left"
+                      stroke="#22d3ee"
+                      fontSize={9}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+
+                    <YAxis
+                      yAxisId="right"
+                      orientation="right"
+                      stroke="#fb7185"
+                      fontSize={9}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+
+                    <Tooltip
+                      contentStyle={{
+                        background:
+                          "#07101d",
+                        border:
+                          "1px solid rgba(255,255,255,0.1)",
+                        borderRadius: 12,
+                        fontSize: 11,
+                      }}
+                    />
+
+                    <Line
+                      yAxisId="left"
+                      type="monotone"
+                      dataKey="throughput"
+                      stroke="#22d3ee"
+                      strokeWidth={3}
+                      dot={false}
+                      name="Throughput"
+                    />
+
+                    <Line
+                      yAxisId="right"
+                      type="monotone"
+                      dataKey="errorRate"
+                      stroke="#fb7185"
+                      strokeWidth={2}
+                      dot={false}
+                      name="Error %"
+                    />
                   </LineChart>
                 </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center text-slate-600 text-sm">
+                  Waiting for telemetry stream...
+                </div>
               )}
+            </div>
+
+            <div className="flex items-center gap-6 text-[10px] text-slate-500 mt-2">
+              <span className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                Throughput
+              </span>
+
+              <span className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-rose-400" />
+                Error Rate
+              </span>
             </div>
           </div>
 
-        </div>
+          <div className="xl:col-span-3 rounded-3xl border border-white/10 bg-white/[0.025] backdrop-blur-xl p-5">
+            <PanelHeader
+              icon={<Layers3 size={17} />}
+              title="Data Quality"
+              subtitle="Great Expectations"
+              badge="v0.17"
+              badgeColor="violet"
+            />
 
-        {/* RIGHT COLUMN: DATA QUALITY AUDITS & INCIDENTS (4 cols) */}
-        <div className="lg:col-span-4 flex flex-col gap-6">
-          
-          {/* GREAT EXPECTATIONS SANITY CHECK */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-            <div className="border-b border-slate-850 pb-3 flex justify-between items-center">
-              <div>
-                <span className="text-[9px] font-bold text-cyan-400 font-mono uppercase block">Batch Validations</span>
-                <h3 className="text-sm font-black text-white">Great Expectations Assertions</h3>
+            <div className="mt-5 rounded-2xl bg-slate-950/70 border border-white/5 p-5">
+              <div className="flex items-end justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-slate-500">
+                    Assertion Success
+                  </div>
+
+                  <div className="text-4xl font-black mt-1">
+                    {Number(
+                      qualitySuccess
+                    ).toFixed(1)}
+
+                    <span className="text-lg text-slate-500">
+                      %
+                    </span>
+                  </div>
+                </div>
+
+                {anomalyActive ? (
+                  <AlertTriangle
+                    size={28}
+                    className="text-rose-400"
+                  />
+                ) : (
+                  <CheckCircle2
+                    size={28}
+                    className="text-emerald-400"
+                  />
+                )}
               </div>
-              <span className="text-[10px] bg-cyan-950/40 text-cyan-400 border border-cyan-500/20 px-2 py-0.5 rounded font-mono">v0.17</span>
+
+              <div className="h-2 bg-slate-800 rounded-full mt-5 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    anomalyActive
+                      ? "bg-gradient-to-r from-rose-500 to-orange-400"
+                      : "bg-gradient-to-r from-emerald-500 to-cyan-400"
+                  }`}
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        Number(
+                          qualitySuccess
+                        )
+                      )
+                    )}%`,
+                  }}
+                />
+              </div>
             </div>
 
-            <div className="space-y-3.5 text-xs font-mono">
-              <div className="bg-slate-950/60 border border-slate-850 p-3 rounded-xl space-y-2">
-                <div className="flex justify-between items-center text-[10px] text-slate-500">
-                  <span>ASSERTION RATIO</span>
-                  <span className={geReport?.status === 'OK' ? 'text-emerald-400' : 'text-rose-400'}>
-                    {geReport?.success_rate_percent || (anomalyActive ? '50.0%' : '100.0%')}
-                  </span>
-                </div>
-                <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full rounded-full transition-all duration-300 ${geReport?.status === 'OK' ? 'bg-emerald-500' : 'bg-rose-500'}`} 
-                    style={{ width: geReport?.success_rate_percent ? `${geReport.success_rate_percent}%` : (anomalyActive ? '50%' : '100%') }}
+            <div className="space-y-3 mt-4">
+              <QualityRow
+                name="amount > 0"
+                pass={!anomalyActive}
+              />
+
+              <QualityRow
+                name="tax not null > 90%"
+                pass={!anomalyActive}
+              />
+
+              <QualityRow
+                name="schema validation"
+                pass
+              />
+
+              <QualityRow
+                name="Iceberg write contract"
+                pass={!anomalyActive}
+              />
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-white/10 bg-white/[0.025] backdrop-blur-xl overflow-hidden">
+          <PanelHeader
+            icon={<AlertTriangle size={17} />}
+            title="Incident Timeline"
+            subtitle="Detected data quality and pipeline events"
+            badge={`${activeIncidents.length} ACTIVE`}
+            badgeColor={
+              activeIncidents.length > 0
+                ? "rose"
+                : "emerald"
+            }
+          />
+
+          <div className="p-5">
+            {displayedIncidents.length ===
+            0 ? (
+              <div className="py-10 text-center">
+                <div className="w-12 h-12 mx-auto rounded-2xl bg-emerald-400/10 flex items-center justify-center">
+                  <ShieldCheck
+                    size={23}
+                    className="text-emerald-400"
                   />
                 </div>
-              </div>
 
-              {/* Expectations Lists */}
-              <div className="space-y-2 text-[11px]">
-                <div className="flex justify-between p-2 rounded bg-slate-950/40 border border-slate-850/60 items-center">
-                  <span className="text-slate-300">expect_amount_to_be_gt_0</span>
-                  <span className={anomalyActive ? 'text-rose-400' : 'text-emerald-400'}>
-                    {anomalyActive ? '❌ FAIL (8 rows)' : '✓ PASS'}
-                  </span>
+                <div className="font-bold mt-3">
+                  No incidents detected
                 </div>
-                
-                <div className="flex justify-between p-2 rounded bg-slate-950/40 border border-slate-850/60 items-center">
-                  <span className="text-slate-300">expect_tax_not_null_mostly_90</span>
-                  <span className={anomalyActive ? 'text-rose-400' : 'text-emerald-400'}>
-                    {anomalyActive ? '❌ FAIL (42 rows)' : '✓ PASS'}
-                  </span>
+
+                <div className="text-xs text-slate-500 mt-1">
+                  All streaming validation checks
+                  are green.
                 </div>
               </div>
+            ) : (
+              <div className="space-y-3">
+                {displayedIncidents.map(
+                  (incident) => (
+                    <div
+                      key={incident.id}
+                      className={`flex items-center gap-4 p-4 rounded-2xl border ${
+                        incident.resolved
+                          ? "bg-white/[0.02] border-white/5"
+                          : "bg-rose-500/[0.05] border-rose-500/20"
+                      }`}
+                    >
+                      <div
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                          incident.resolved
+                            ? "bg-emerald-400/10"
+                            : "bg-rose-400/10"
+                        }`}
+                      >
+                        {incident.resolved ? (
+                          <CheckCircle2
+                            size={18}
+                            className="text-emerald-400"
+                          />
+                        ) : (
+                          <AlertTriangle
+                            size={18}
+                            className="text-rose-400"
+                          />
+                        )}
+                      </div>
 
-              <div className="p-3 bg-cyan-950/10 border border-cyan-500/10 rounded-xl text-[10px] text-cyan-300 flex gap-2">
-                <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                <p className="leading-relaxed">
-                  Great Expectations runs asserts directly on generated stream frames, preventing structural anomalies from landing in clean iceberg tables.
-                </p>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm font-bold">
+                            {
+                              incident.ruleViolated
+                            }
+                          </div>
+
+                          {incident.resolved && (
+                            <span className="text-[8px] font-bold tracking-widest px-2 py-1 rounded-full bg-emerald-400/10 border border-emerald-400/20 text-emerald-400">
+                              RESOLVED
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="text-[11px] text-slate-500 mt-1">
+                          {
+                            incident.affectedNode
+                          }{" "}
+                          ·{" "}
+                          {
+                            incident.message
+                          }
+                        </div>
+                      </div>
+
+                      <div className="text-[10px] text-slate-600">
+                        {new Date(
+                          incident.timestamp
+                        ).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
-            </div>
+            )}
+          </div>
+        </section>
+
+        <footer className="flex flex-col md:flex-row items-center justify-between gap-3 py-4 text-[10px] text-slate-600">
+          <div>
+            IceStream · Real-Time Lakehouse
+            Observability
           </div>
 
-          {/* SEVERE INCIDENTS LOG */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex-1 flex flex-col justify-between min-h-[350px]">
-            <div className="border-b border-slate-850 pb-3 mb-4">
-              <span className="text-[9px] font-bold text-rose-500 font-mono uppercase block">System Anomalies</span>
-              <h3 className="text-sm font-black text-white">Lineage Incidents</h3>
-            </div>
-
-            <div className="flex-1 overflow-y-auto space-y-3 max-h-[300px] pr-1">
-              {incidents.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center py-12 text-center text-slate-500 text-xs font-mono">
-                  <CheckCircle2 className="w-8 h-8 text-slate-700 mb-2" />
-                  No incidents logged. Stream validation checks green.
-                </div>
-              ) : (
-                incidents.map((inc) => (
-                  <div 
-                    key={inc.id}
-                    className={`p-3.5 rounded-xl border font-mono text-xs space-y-2 transition-all ${
-                      inc.resolved 
-                        ? 'bg-slate-950/40 border-slate-850 text-slate-400' 
-                        : 'bg-rose-950/40 border-rose-500/30 text-rose-200'
-                    }`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                        inc.resolved 
-                          ? 'bg-slate-800 text-slate-400' 
-                          : 'bg-rose-500/20 text-rose-400 border border-rose-500/25'
-                      }`}>
-                        {inc.id} • {inc.resolved ? 'RESOLVED' : 'ACTIVE'}
-                      </span>
-                      <span className="text-[9px] text-slate-500">
-                        {new Date(inc.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-
-                    <div>
-                      <h4 className="font-bold text-[11px] text-slate-200">{inc.ruleViolated}</h4>
-                      <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">{inc.message}</p>
-                    </div>
-
-                    <div className="flex justify-between items-center text-[9px] text-slate-500 pt-1.5 border-t border-slate-850/40">
-                      <span>Node: {inc.affectedNode}</span>
-                      <span className="uppercase">{inc.severity}</span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="pt-4 border-t border-slate-850 flex justify-between items-center text-[10px] font-mono text-slate-500">
-              <span>Axlero Observability Framework</span>
-              <span>v1.0.0 SPEC</span>
-            </div>
+          <div className="flex items-center gap-5">
+            <span>Kafka</span>
+            <span>Apache Flink</span>
+            <span>Apache Iceberg</span>
+            <span>Great Expectations</span>
           </div>
-
-        </div>
-
+        </footer>
       </main>
-
-      {/* FOOTER */}
-      <footer className="border-t border-slate-900 bg-slate-950 py-6 px-6 text-xs text-center text-slate-500 mt-12 font-mono">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-          <span>Axlero Solutions Internship Project Template © 2026</span>
-          <div className="flex gap-4">
-            <span className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> 
-              Vite Dev (Port 3000)
-            </span>
-            <span>Security: Local Sandbox Layer</span>
-          </div>
-        </div>
-      </footer>
-
     </div>
   );
+}
+
+function MetricCard({
+  icon,
+  label,
+  value,
+  unit,
+  detail,
+  color,
+  trend,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  unit: string;
+  detail: string;
+  color: string;
+  trend: string;
+}) {
+  const colors: Record<
+    string,
+    string
+  > = {
+    cyan:
+      "text-cyan-400 bg-cyan-400/10 border-cyan-400/20",
+    emerald:
+      "text-emerald-400 bg-emerald-400/10 border-emerald-400/20",
+    violet:
+      "text-violet-400 bg-violet-400/10 border-violet-400/20",
+    blue:
+      "text-blue-400 bg-blue-400/10 border-blue-400/20",
+    rose:
+      "text-rose-400 bg-rose-400/10 border-rose-400/20",
+  };
+
+  return (
+    <div className="group relative rounded-3xl border border-white/10 bg-white/[0.025] p-5 overflow-hidden hover:border-white/20 transition-all">
+      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent opacity-0 group-hover:opacity-100" />
+
+      <div className="flex items-start justify-between">
+        <div
+          className={`w-10 h-10 rounded-xl border flex items-center justify-center ${colors[color]}`}
+        >
+          {icon}
+        </div>
+
+        <span className="text-[9px] font-bold tracking-widest text-slate-600">
+          LIVE
+        </span>
+      </div>
+
+      <div className="mt-5 text-[10px] text-slate-500 uppercase tracking-widest font-bold">
+        {label}
+      </div>
+
+      <div className="flex items-baseline gap-2 mt-1">
+        <span className="text-3xl font-black tracking-tight">
+          {value}
+        </span>
+
+        <span className="text-xs text-slate-500">
+          {unit}
+        </span>
+      </div>
+
+      <div className="flex justify-between items-center mt-3">
+        <span className="text-[10px] text-slate-600">
+          {detail}
+        </span>
+
+        <span
+          className={`text-[9px] font-bold ${
+            color === "rose"
+              ? "text-rose-400"
+              : "text-emerald-400"
+          }`}
+        >
+          {trend}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PanelHeader({
+  icon,
+  title,
+  subtitle,
+  badge,
+  badgeColor,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  badge: string;
+  badgeColor: string;
+}) {
+  const colors: Record<
+    string,
+    string
+  > = {
+    cyan:
+      "text-cyan-300 bg-cyan-400/10 border-cyan-400/20",
+    emerald:
+      "text-emerald-300 bg-emerald-400/10 border-emerald-400/20",
+    violet:
+      "text-violet-300 bg-violet-400/10 border-violet-400/20",
+    rose:
+      "text-rose-300 bg-rose-400/10 border-rose-400/20",
+  };
+
+  return (
+    <div className="flex items-center justify-between p-5 border-b border-white/10">
+      <div className="flex items-center gap-3">
+        <div className="text-slate-400">
+          {icon}
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold">
+            {title}
+          </h3>
+
+          <p className="text-[10px] text-slate-600 mt-0.5">
+            {subtitle}
+          </p>
+        </div>
+      </div>
+
+      <span
+        className={`text-[9px] font-bold tracking-widest px-2.5 py-1 rounded-full border ${colors[badgeColor]}`}
+      >
+        {badge}
+      </span>
+    </div>
+  );
+}
+
+function StatusCell({
+  label,
+  value,
+  status,
+  statusColor = "emerald",
+}: {
+  label: string;
+  value: string;
+  status: string;
+  statusColor?: string;
+}) {
+  const colors: Record<
+    string,
+    string
+  > = {
+    emerald: "text-emerald-400",
+    rose: "text-rose-400",
+    amber: "text-amber-400",
+  };
+
+  return (
+    <div className="p-4 border-r border-white/10 last:border-r-0">
+      <div className="text-[9px] tracking-widest text-slate-600">
+        {label}
+      </div>
+
+      <div className="flex items-center justify-between mt-1">
+        <span className="text-xs font-bold">
+          {value}
+        </span>
+
+        <span
+          className={`text-[9px] ${colors[statusColor]}`}
+        >
+          ● {status}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function HealthRow({
+  label,
+  value,
+  ok,
+}: {
+  label: string;
+  value: string;
+  ok: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.025] border border-white/5">
+      <span className="text-xs text-slate-400">
+        {label}
+      </span>
+
+      <span
+        className={`flex items-center gap-1.5 text-[10px] font-bold ${
+          ok
+            ? "text-emerald-400"
+            : "text-rose-400"
+        }`}
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-current" />
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function QualityRow({
+  name,
+  pass,
+}: {
+  name: string;
+  pass: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.025] border border-white/5">
+      <span className="text-[11px] text-slate-400">
+        {name}
+      </span>
+
+      {pass ? (
+        <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400">
+          <CheckCircle2 size={13} />
+          PASS
+        </span>
+      ) : (
+        <span className="flex items-center gap-1 text-[10px] font-bold text-rose-400">
+          <AlertTriangle size={13} />
+          FAIL
+        </span>
+      )}
+    </div>
+  );
+}
+
+function NodeCard({
+  icon,
+  title,
+  subtitle,
+  color,
+  status,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  color: string;
+  status: string;
+}) {
+  const text: Record<
+    string,
+    string
+  > = {
+    cyan: "text-cyan-400",
+    purple: "text-violet-400",
+    emerald: "text-emerald-400",
+    rose: "text-rose-400",
+  };
+
+  return (
+    <div className="px-4 py-3 min-w-[180px]">
+      <div
+        className={`flex items-center gap-2 ${text[color]}`}
+      >
+        {icon}
+
+        <span className="text-xs font-black text-white">
+          {title}
+        </span>
+      </div>
+
+      <div className="text-[9px] text-slate-500 mt-2">
+        {subtitle}
+      </div>
+
+      <div className="text-[9px] text-emerald-400 mt-1 font-bold">
+        ● {status}
+      </div>
+    </div>
+  );
+}
+
+function nodeStyle(border: string) {
+  return {
+    background:
+      "rgba(7, 16, 29, 0.96)",
+    border: `1px solid ${border}`,
+    borderRadius: 16,
+    padding: 0,
+    boxShadow: `0 0 25px ${border}18`,
+  };
 }
