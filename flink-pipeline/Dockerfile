@@ -1,7 +1,5 @@
-FROM flink:1.18.1-java17
+﻿FROM flink:1.18.1-java17
 
 WORKDIR /opt/flink/usrlib
 
-COPY target/*.jar app.jar
-
-CMD ["jobmanager"]
+COPY target/flink-pipeline-1.0.0.jar app.jar

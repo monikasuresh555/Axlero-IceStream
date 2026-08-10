@@ -1,9 +1,7 @@
-<?xml version="1.0" encoding="UTF-8"?>
-
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 
     <modelVersion>4.0.0</modelVersion>
 
@@ -16,21 +14,18 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-
-        <!-- Match Docker: flink:1.18.1-java17 -->
         <java.version>17</java.version>
-
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
 
         <flink.version>1.18.1</flink.version>
-        <iceberg.version>1.3.0</iceberg.version>
-        <jackson.version>2.14.2</jackson.version>
+        <flink.kafka.version>3.0.2-1.18</flink.kafka.version>
+        <jackson.version>2.15.3</jackson.version>
+        <slf4j.version>1.7.36</slf4j.version>
     </properties>
 
     <dependencies>
 
-        <!-- Apache Flink -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-streaming-java</artifactId>
@@ -45,54 +40,40 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Kafka Connector -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-kafka</artifactId>
-            <version>${flink.version}</version>
+            <version>${flink.kafka.version}</version>
         </dependency>
 
-        <!-- Apache Iceberg -->
-        <dependency>
-            <groupId>org.apache.iceberg</groupId>
-            <artifactId>iceberg-flink-runtime-1.18</artifactId>
-            <version>${iceberg.version}</version>
-        </dependency>
-
-        <!-- Jackson -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
             <version>${jackson.version}</version>
         </dependency>
 
-        <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-            <version>1.7.36</version>
+            <version>${slf4j.version}</version>
             <scope>provided</scope>
         </dependency>
 
     </dependencies>
 
     <build>
-
         <plugins>
 
-            <!-- Java compiler -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
-
                 <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
+                    <source>17</source>
+                    <target>17</target>
                 </configuration>
             </plugin>
 
-            <!-- Build executable fat JAR -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -101,49 +82,37 @@
                 <executions>
                     <execution>
                         <phase>package</phase>
-
                         <goals>
                             <goal>shade</goal>
                         </goals>
 
                         <configuration>
-
                             <createDependencyReducedPom>false</createDependencyReducedPom>
 
                             <filters>
-
                                 <filter>
                                     <artifact>*:*</artifact>
-
                                     <excludes>
                                         <exclude>META-INF/*.SF</exclude>
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
                                     </excludes>
-
                                 </filter>
-
                             </filters>
 
                             <transformers>
-
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>
-                                        com.icestream.pipeline.IceStreamPipeline
-                                    </mainClass>
+                                    <mainClass>com.icestream.pipeline.IceStreamPipeline</mainClass>
                                 </transformer>
-
                             </transformers>
 
                         </configuration>
-
                     </execution>
                 </executions>
 
             </plugin>
 
         </plugins>
-
     </build>
 
 </project>
