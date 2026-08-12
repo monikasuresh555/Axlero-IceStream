@@ -125,4 +125,20 @@ npm run dev
 cd frontend
 npm install
 npm run dev
-```
+
+
+```## Running IceStream with Docker
+
+docker compose up -d
+
+Check services:
+docker compose ps
+
+Flink Dashboard:
+http://localhost:8081
+
+Kafka:
+localhost:9092
+
+MinIO Console:
+http://localhost:9001
