@@ -142,3 +142,18 @@ localhost:9092
 
 MinIO Console:
 http://localhost:9001
+
+
+## Pipeline Verification
+
+Check Flink jobs:
+
+docker exec icestream-flink-jobmanager /opt/flink/bin/flink list
+
+Check Kafka topics:
+
+docker exec icestream-kafka kafka-topics --bootstrap-server kafka:9092 --list
+
+Send test checkout events:
+
+docker exec -it icestream-kafka kafka-console-producer --bootstrap-server kafka:9092 --topic checkout_events
