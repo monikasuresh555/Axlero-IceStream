@@ -1297,4 +1297,13 @@ Bengaluru, India
 
 **Project:** IceStream – Real-Time Lakehouse Observability
 
-**Batch:** 2027
+**Batch:** 2027  
+**Anushka Mhaske**
+
+Bachelor of Computer Applications
+Shivchhatrapati College, Aurangabad, Maharashtra, India
+
+
+**Project:** IceStream – Real-Time Lakehouse Observability
+
+**Batch:** 2026
